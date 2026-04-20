@@ -1,9 +1,5 @@
-import OpenAI from "openai";
+import { OpenRouter } from "@openrouter/sdk";
 import type { EmotionLabel, InferenceResult, StudentProfile } from "./types";
-
-type ORChatMessage = OpenAI.Chat.Completions.ChatCompletionMessage & {
-  reasoning_details?: unknown;
-};
 
 function fallbackAnswer(profile: StudentProfile, inference: InferenceResult) {
   const toneIntro: Record<EmotionLabel, string> = {
@@ -24,8 +20,7 @@ export async function polishWithOpenRouter(profile: StudentProfile, inference: I
   }
 
   try {
-    const client = new OpenAI({
-      baseURL: "https://openrouter.ai/api/v1",
+    const openrouter = new OpenRouter({
       apiKey: process.env.OPENROUTER_API_KEY,
     });
 
@@ -36,57 +31,39 @@ export async function polishWithOpenRouter(profile: StudentProfile, inference: I
       inference,
     });
 
-    const requestBody = {
-      model: "google/gemma-4-31b-it:free",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a college career guidance assistant. Use only the provided expert-system result. Do not invent new recommendations. Adjust tone based on emotion. Keep the answer practical and clear for a student project presentation.",
-        },
-        {
-          role: "user",
-          content: userMessage,
-        },
-      ],
-      reasoning: { enabled: true },
-    } as const;
-
-    const apiResponse = await client.chat.completions.create(requestBody as any);
-
-    const response = apiResponse.choices[0]?.message as ORChatMessage | undefined;
-
-    const messages = [
-      {
-        role: "system" as const,
-        content:
-          "You are a college career guidance assistant. Use only the provided expert-system result. Do not invent new recommendations. Adjust tone based on emotion. Keep the answer practical and clear for a student project presentation.",
-      },
-      {
-        role: "user" as const,
-        content: userMessage,
-      },
-      {
-        role: "assistant" as const,
-        content: response?.content,
-        reasoning_details: response?.reasoning_details,
-      },
-      {
-        role: "user" as const,
-        content: "Are you sure? Think carefully.",
-      },
-    ];
-
-    const response2 = await client.chat.completions.create(
-      {
+    const stream = await openrouter.chat.send({
+      chatRequest: {
         model: "google/gemma-4-31b-it:free",
-        messages,
-        reasoning: { enabled: true },
-      } as any,
-    );
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a college career guidance assistant. Use only the provided expert-system result. Do not invent new recommendations. Adjust tone based on emotion. Keep the answer practical and clear for a student project presentation.",
+          },
+          {
+            role: "user",
+            content: userMessage,
+          },
+        ],
+        stream: true,
+      },
+    });
 
-    const finalResponse = response2.choices[0]?.message as ORChatMessage | undefined;
-    return finalResponse?.content?.trim() || response?.content?.trim() || fallbackAnswer(profile, inference);
+    let response = "";
+
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content;
+      if (content) {
+        response += content;
+      }
+
+      const reasoningTokens = chunk.usage?.completionTokensDetails?.reasoningTokens;
+      if (reasoningTokens) {
+        console.log("Reasoning tokens:", reasoningTokens);
+      }
+    }
+
+    return response.trim() || fallbackAnswer(profile, inference);
   } catch (error) {
     console.error("OpenRouter request failed", error);
     return fallbackAnswer(profile, inference);
