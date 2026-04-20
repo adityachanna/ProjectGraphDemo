@@ -2,6 +2,11 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List
 
+import nltk
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+from nltk.tokenize import wordpunct_tokenize
+
 
 KEYWORDS: Dict[str, Dict[str, List[str]]] = {
     "branches": {
@@ -83,29 +88,79 @@ RULES = [
 ]
 
 
+def ensure_nltk_resources() -> bool:
+    """Ensure required NLTK corpora are available; returns False if setup fails."""
+    resources = {
+        "corpora/stopwords": "stopwords",
+        "corpora/wordnet": "wordnet",
+        "corpora/omw-1.4": "omw-1.4",
+    }
+    try:
+        for path, package in resources.items():
+            try:
+                nltk.data.find(path)
+            except LookupError:
+                nltk.download(package, quiet=True)
+        return True
+    except Exception:
+        return False
+
+
+NLTK_READY = ensure_nltk_resources()
+
+
+def normalize_whitespace(text: str) -> str:
+    lowered = re.sub(r"[^a-zA-Z0-9\s]", " ", text.lower())
+    return re.sub(r"\s+", " ", lowered).strip()
+
+
+def preprocess_with_nltk(text: str) -> str:
+    """Tokenize, remove stopwords, and lemmatize to improve matching recall."""
+    normalized = normalize_whitespace(text)
+    if not NLTK_READY:
+        return normalized
+
+    try:
+        stop_words = set(stopwords.words("english"))
+        lemmatizer = WordNetLemmatizer()
+        tokens = [token for token in wordpunct_tokenize(normalized) if token.isalpha()]
+        filtered = [token for token in tokens if token not in stop_words]
+        lemmas = [lemmatizer.lemmatize(token) for token in filtered]
+        return " ".join(lemmas)
+    except Exception:
+        return normalized
+
+
 def contains_phrase(text: str, phrase: str) -> bool:
     escaped = re.escape(phrase)
     return bool(re.search(rf"(^|\s){escaped}(\s|$)", text))
 
 
-def collect_matches(group: Dict[str, List[str]], text: str) -> List[str]:
-    return [canonical for canonical, aliases in group.items() if any(contains_phrase(text, alias) for alias in aliases)]
+def collect_matches(group: Dict[str, List[str]], texts: List[str]) -> List[str]:
+    return [
+        canonical
+        for canonical, aliases in group.items()
+        if any(any(contains_phrase(text, alias) for text in texts) for alias in aliases)
+    ]
 
 
 def extract_profile(text: str) -> Dict[str, List[str] | str]:
-    normalized = text.lower()
+    normalized = normalize_whitespace(text)
+    nlp_normalized = preprocess_with_nltk(text)
+    searchable_texts = [normalized, nlp_normalized]
+
     emotion = "neutral"
     for label, aliases in KEYWORDS["emotions"].items():
-        if any(contains_phrase(normalized, alias) for alias in aliases):
+        if any(any(contains_phrase(candidate_text, alias) for candidate_text in searchable_texts) for alias in aliases):
             emotion = label
             break
 
     return {
-        "branches": collect_matches(KEYWORDS["branches"], normalized),
-        "years": collect_matches(KEYWORDS["years"], normalized),
-        "interests": collect_matches(KEYWORDS["interests"], normalized),
-        "skills": collect_matches(KEYWORDS["skills"], normalized),
-        "goals": collect_matches(KEYWORDS["goals"], normalized),
+        "branches": collect_matches(KEYWORDS["branches"], searchable_texts),
+        "years": collect_matches(KEYWORDS["years"], searchable_texts),
+        "interests": collect_matches(KEYWORDS["interests"], searchable_texts),
+        "skills": collect_matches(KEYWORDS["skills"], searchable_texts),
+        "goals": collect_matches(KEYWORDS["goals"], searchable_texts),
         "emotions": [emotion],
     }
 
