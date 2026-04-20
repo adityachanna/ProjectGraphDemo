@@ -29,7 +29,14 @@ export async function polishWithOpenRouter(profile: StudentProfile, inference: I
       apiKey: process.env.OPENROUTER_API_KEY,
     });
 
-    const apiResponse = await client.chat.completions.create({
+    const userMessage = JSON.stringify({
+      userInput: profile.rawInput,
+      detectedEmotion: profile.emotion,
+      extractedEntities: profile.entities,
+      inference,
+    });
+
+    const requestBody = {
       model: "google/gemma-4-31b-it:free",
       messages: [
         {
@@ -39,18 +46,47 @@ export async function polishWithOpenRouter(profile: StudentProfile, inference: I
         },
         {
           role: "user",
-          content: JSON.stringify({
-            userInput: profile.rawInput,
-            detectedEmotion: profile.emotion,
-            extractedEntities: profile.entities,
-            inference,
-          }),
+          content: userMessage,
         },
       ],
-    });
+      reasoning: { enabled: true },
+    } as const;
+
+    const apiResponse = await client.chat.completions.create(requestBody as any);
 
     const response = apiResponse.choices[0]?.message as ORChatMessage | undefined;
-    return response?.content?.trim() || fallbackAnswer(profile, inference);
+
+    const messages = [
+      {
+        role: "system" as const,
+        content:
+          "You are a college career guidance assistant. Use only the provided expert-system result. Do not invent new recommendations. Adjust tone based on emotion. Keep the answer practical and clear for a student project presentation.",
+      },
+      {
+        role: "user" as const,
+        content: userMessage,
+      },
+      {
+        role: "assistant" as const,
+        content: response?.content,
+        reasoning_details: response?.reasoning_details,
+      },
+      {
+        role: "user" as const,
+        content: "Are you sure? Think carefully.",
+      },
+    ];
+
+    const response2 = await client.chat.completions.create(
+      {
+        model: "google/gemma-4-31b-it:free",
+        messages,
+        reasoning: { enabled: true },
+      } as any,
+    );
+
+    const finalResponse = response2.choices[0]?.message as ORChatMessage | undefined;
+    return finalResponse?.content?.trim() || response?.content?.trim() || fallbackAnswer(profile, inference);
   } catch (error) {
     console.error("OpenRouter request failed", error);
     return fallbackAnswer(profile, inference);
